@@ -9,7 +9,7 @@ module SpreeProductSubscription
                                       dependent: :restrict_with_error
 
         base.after_update :update_subscriptions
-        base.state_machine.after_transition to: :complete, do: :enable_subscriptions, if: :any_disabled_subscription?
+        base.after_commit :enable_subscriptions_after_complete, on: :update
         base.alias_attribute :guest_token, :token
       end
 
@@ -24,14 +24,29 @@ module SpreeProductSubscription
       private
 
       def enable_subscriptions
-        subscriptions.each do |subscription|
+        payment_source = most_recent_payment_source
+
+        unless payment_source
+          Rails.logger.warn("[Subscriptions] Unable to enable subscriptions for order #{number}: no valid payment source found")
+          return
+        end
+
+        subscriptions.disabled.each do |subscription|
           subscription.update(
-            source: payments.from_credit_card.first.source,
+            source: payment_source,
             enabled: true,
             ship_address: ship_address.clone,
             bill_address: bill_address.clone
           )
         end
+      end
+
+      def enable_subscriptions_after_complete
+        return unless previous_changes.key?('state')
+        return unless state == 'complete'
+        return unless any_disabled_subscription?
+
+        enable_subscriptions
       end
 
       def any_disabled_subscription?
@@ -44,6 +59,10 @@ module SpreeProductSubscription
             subscriptions.find_by(variant: line_item.variant).update(line_item.updatable_subscription_attributes)
           end
         end
+      end
+
+      def most_recent_payment_source
+        payments.valid.order(created_at: :desc).detect(&:source)&.source
       end
     end
   end

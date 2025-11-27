@@ -12,7 +12,8 @@ module SpreeProductSubscriptions
         end
 
         def available_payment_methods
-          @order.subscriptions.any? ? ::Spree::Gateway.available_on_back_end : ::Spree::PaymentMethod.available_on_back_end
+          # Spree 5 dropped Spree::Gateway in favor of PaymentMethod subclasses
+          ::Spree::PaymentMethod.available_on_back_end
         end
       end
     end

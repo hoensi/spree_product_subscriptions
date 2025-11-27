@@ -26,7 +26,12 @@ module Spree
     has_many :orders, through: :orders_subscriptions
     has_many :complete_orders, -> { complete }, through: :orders_subscriptions, source: :order
 
-    self.whitelisted_ransackable_associations = %w( parent_order )
+    self.whitelisted_ransackable_associations = %w( parent_order ) if respond_to?(:whitelisted_ransackable_associations=)
+
+    def self.ransackable_associations(auth_object = nil)
+      default_associations = defined?(super) ? Array(super) : []
+      (default_associations + %w(parent_order)).uniq
+    end
 
     scope :paused, -> { where(paused: true) }
     scope :unpaused, -> { where(paused: false) }
@@ -71,7 +76,10 @@ module Spree
     after_update :update_next_occurrence_at
 
     def process
-      if (variant.stock_items.sum(:count_on_hand) >= quantity || variant.stock_items.any? { |stock| stock.backorderable? }) && (!variant.product.discontinued?)
+      in_stock = variant.stock_items.sum(:count_on_hand) >= quantity || variant.stock_items.any?(&:backorderable?)
+      product_available = !product_discontinued?
+
+      if in_stock && product_available
         update_column(:next_occurrence_possible, true)
       else
         update_column(:next_occurrence_possible, false)
@@ -225,13 +233,27 @@ module Spree
       end
 
       def add_payment_method_to_order(order)
-        if order.payments.exists?
-          order.payments.first.update(source: source, payment_method: source.payment_method)
-        else
-          created_payment = order.payments.new(source: source, payment_method: source.payment_method, amount: order.total)
-          created_payment.save
-          created_payment.process!
+        payment_method = source&.payment_method
+
+        unless source && payment_method
+          raise Spree::Core::GatewayError, "No valid payment source available for subscription #{id}"
         end
+
+        payment = if order.payments.exists?
+          order.payments.order(created_at: :desc).first.tap do |existing_payment|
+            existing_payment.update!(source: source, payment_method: payment_method, amount: order.total)
+          end
+        else
+          order.payments.create!(source: source, payment_method: payment_method, amount: order.total)
+        end
+
+        begin
+          payment.process! unless payment.completed?
+        rescue StandardError => e
+          Rails.logger.error "[Subscriptions] Payment processing failed for subscription #{id}: #{e.class} #{e.message}"
+          raise
+        end
+
         order.next
       end
 
@@ -315,6 +337,10 @@ module Spree
         if Time.current + prior_notification_days_gap.days >= next_occurrence_at_value
           errors.add(:prior_notification_days_gap, Spree.t('subscriptions.error.should_be_earlier_than_next_delivery'))
         end
+      end
+
+      def product_discontinued?
+        variant.product.respond_to?(:discontinued?) && variant.product.discontinued?
       end
   end
 end
