@@ -1,3 +1,8 @@
+begin
+  require_dependency 'spree/users_controller'
+rescue LoadError
+end
+
 module SpreeProductSubscriptions
   module Spree
     module UsersControllerDecorator
@@ -15,4 +20,8 @@ module SpreeProductSubscriptions
   end
 end
 
-::Spree::UsersController.prepend ::SpreeProductSubscriptions::Spree::UsersControllerDecorator
+Rails.application.config.to_prepare do
+  if defined?(::Spree::UsersController)
+    ::Spree::UsersController.prepend(::SpreeProductSubscriptions::Spree::UsersControllerDecorator)
+  end
+end
